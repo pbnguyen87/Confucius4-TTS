@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Model weights and downloads (multi-GB; fetch with hf download, see scripts/README.md)
+checkpoints/*.safetensors
+checkpoints/*.pt
+checkpoints/.cache/
+!checkpoints/wav2vec2bert_stats.pt
+pretrained/
+external/Amphion/
+
+# Generated data, logs, runtime files
+data/
+logs/
+config/.inference_config_runtime.yaml
+*.wav
+!resources/*.wav
+
+# OS / editor
+.DS_Store
