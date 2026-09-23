@@ -19,6 +19,9 @@ Pipeline
     4. pick reference clips per speaker (other utterances of the same speaker)
     5. split train / val per speaker and write the TSVs
 
+Steps 3-5 live in :func:`build_dataset` and are shared with
+``prepare_confucius_data_s8.py`` (which starts from the packaged ``s8`` dataset).
+
 Example::
 
     python scripts/prepare_confucius_data.py \\
@@ -57,28 +60,10 @@ TSV_COLUMNS = ["lang", "wav_path", "norm_text", "semantic_ids_path", "ref_audio_
 log = logging.getLogger("prepare_confucius_data")
 
 
-# --------------------------------------------------------------------------- args
-def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--s7-dir", required=True, help="path to <workdir>/s7_loudnorm")
-    ap.add_argument("--out-dir", required=True, help="output folder, e.g. data/vi_podcast_Confucius4_TTS")
+# --------------------------------------------------------------------------- shared CLI options
+def add_common_args(ap: argparse.ArgumentParser) -> None:
+    """Options shared by the s7 and s8 entry points (reference clips, split, tokenizer)."""
     ap.add_argument("--lang", default="vi", help="language code written to the TSV (must exist in LANGUAGE_TOKEN_MAP)")
-    ap.add_argument(
-        "--pipeline-root",
-        default=None,
-        help="folder that manifest audio_path is relative to (default: two levels above --s7-dir, i.e. audio-pipeline/)",
-    )
-
-    # tier-A rule, defaults from audio-pipeline/config/default.yaml
-    g = ap.add_argument_group("quality filter (pipeline tier A defaults)")
-    g.add_argument("--max-cer", type=float, default=0.02)
-    g.add_argument("--min-snr-db", type=float, default=20.0)
-    g.add_argument("--min-dnsmos", type=float, default=3.0, help="used instead of SNR when a dnsmos score exists")
-    g.add_argument("--max-clipping", type=float, default=0.001)
-    g.add_argument("--min-seconds", type=float, default=2.0)
-    g.add_argument("--max-seconds", type=float, default=13.0)
-    g.add_argument("--allow-multi-speaker", action="store_true")
-    g.add_argument("--text-field", default="text_normalized", help="manifest field used as norm_text")
 
     r = ap.add_argument_group("reference audio")
     r.add_argument("--num-refs", type=int, default=3, help="reference clips per utterance (same speaker, excluding itself)")
@@ -99,6 +84,44 @@ def parse_args() -> argparse.Namespace:
 
     ap.add_argument("--dry-run", action="store_true", help="filter and report only; no model loading, no TSV")
     ap.add_argument("-v", "--verbose", action="store_true")
+
+
+def setup_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+def resolve_out_dir(out_dir: str) -> Path:
+    p = Path(out_dir).expanduser()
+    return p.resolve() if p.is_absolute() else (REPO_ROOT / p).resolve()
+
+
+# --------------------------------------------------------------------------- s7-specific args
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--s7-dir", required=True, help="path to <workdir>/s7_loudnorm")
+    ap.add_argument("--out-dir", required=True, help="output folder, e.g. data/vi_podcast_Confucius4_TTS")
+    ap.add_argument(
+        "--pipeline-root",
+        default=None,
+        help="folder that manifest audio_path is relative to (default: two levels above --s7-dir, i.e. audio-pipeline/)",
+    )
+
+    # tier-A rule, defaults from audio-pipeline/config/default.yaml
+    g = ap.add_argument_group("quality filter (pipeline tier A defaults)")
+    g.add_argument("--max-cer", type=float, default=0.02)
+    g.add_argument("--min-snr-db", type=float, default=20.0)
+    g.add_argument("--min-dnsmos", type=float, default=3.0, help="used instead of SNR when a dnsmos score exists")
+    g.add_argument("--max-clipping", type=float, default=0.001)
+    g.add_argument("--min-seconds", type=float, default=2.0)
+    g.add_argument("--max-seconds", type=float, default=13.0)
+    g.add_argument("--allow-multi-speaker", action="store_true")
+    g.add_argument("--text-field", default="text_normalized", help="manifest field used as norm_text")
+
+    add_common_args(ap)
     return ap.parse_args()
 
 
@@ -222,6 +245,16 @@ def split_per_speaker(rows: List[dict], val_ratio: float, seed: int) -> Dict[str
     return out
 
 
+def split_from_field(rows: List[dict]) -> Dict[str, List[dict]]:
+    """Honour a pre-assigned ``split`` field (s8): train -> train, val/test -> val."""
+    out = {"train": [], "val": []}
+    for r in rows:
+        (out["train"] if r.get("split", "train") == "train" else out["val"]).append(r)
+    out["train"].sort(key=lambda r: r["id"])
+    out["val"].sort(key=lambda r: r["id"])
+    return out
+
+
 def write_tsv(path: Path, rows: List[dict], lang: str) -> None:
     """Header-less 5-column TSV, written as plain joined lines (no csv quoting/escaping)."""
     with path.open("w", encoding="utf-8", newline="\n") as f:
@@ -233,82 +266,52 @@ def write_tsv(path: Path, rows: List[dict], lang: str) -> None:
             f.write("\t".join(fields) + "\n")
 
 
-# --------------------------------------------------------------------------- main
-def main() -> None:
-    a = parse_args()
-    logging.basicConfig(
-        level=logging.DEBUG if a.verbose else logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
-
-    s7_dir = Path(a.s7_dir).expanduser().resolve()
-    manifest_path = s7_dir / "manifest.jsonl"
-    if not manifest_path.is_file():
-        sys.exit(f"manifest not found: {manifest_path}")
-    pipeline_root = Path(a.pipeline_root).resolve() if a.pipeline_root else s7_dir.parent.parent
-    out_dir = Path(a.out_dir).expanduser()
-    if not out_dir.is_absolute():
-        out_dir = (REPO_ROOT / out_dir).resolve()
-    sem_dir = out_dir / "semantic"
-
-    # ---- 1. read + resolve
-    rows = read_manifest(manifest_path)
-    log.info("manifest %s: %d records", manifest_path, len(rows))
-    reasons: Counter = Counter()
-    accepted: List[dict] = []
-    for r in rows:
-        wav = resolve_audio(r, s7_dir, pipeline_root)
-        if wav is None:
-            reasons["audio_missing"] += 1
-            continue
-        text = clean_text(r.get(a.text_field) or r.get("text"))
-        why = tier_reject_reason(r, a, text)
-        if why:
-            reasons[why] += 1
-            continue
-        if not r.get("speaker_id"):
-            reasons["speaker_missing"] += 1
-            continue
-        rr = dict(r)
-        rr["wav_abs"] = wav
-        rr["norm_text"] = text
-        accepted.append(rr)
-    log.info("tier filter: %d accepted, rejected by reason: %s", len(accepted), dict(reasons))
-
-    # ---- speakers with too few utterances cannot get reference clips
+def drop_small_speakers(accepted: List[dict], min_utts: int, reasons: Counter) -> List[dict]:
     by_spk: Dict[str, List[dict]] = defaultdict(list)
     for r in accepted:
         by_spk[r["speaker_id"]].append(r)
-    keep_spk = {s for s, u in by_spk.items() if len(u) >= a.min_utts_per_speaker}
-    dropped_spk = set(by_spk) - keep_spk
-    if dropped_spk:
-        n_drop = sum(len(by_spk[s]) for s in dropped_spk)
+    dropped = {s for s, u in by_spk.items() if len(u) < min_utts}
+    if dropped:
+        n_drop = sum(len(by_spk[s]) for s in dropped)
         reasons["speaker_too_few_utts"] += n_drop
-        log.info("dropping %d speakers (<%d utts) = %d utterances", len(dropped_spk), a.min_utts_per_speaker, n_drop)
-        accepted = [r for r in accepted if r["speaker_id"] in keep_spk]
+        log.info("dropping %d speakers (<%d utts) = %d utterances", len(dropped), min_utts, n_drop)
+        accepted = [r for r in accepted if r["speaker_id"] not in dropped]
+    return accepted
 
+
+def dry_run_report(source: str, n_records: int, accepted: List[dict], reasons: Counter) -> None:
     total_sec = sum(r["duration"] for r in accepted)
-    log.info("after speaker filter: %d utts, %d speakers, %.2f h", len(accepted), len(keep_spk), total_sec / 3600)
+    spk = Counter(r["speaker_id"] for r in accepted)
+    print(json.dumps({
+        "source": source,
+        "records": n_records,
+        "accepted": len(accepted),
+        "speakers": len(spk),
+        "hours": round(total_sec / 3600, 3),
+        "rejected": dict(reasons),
+        "utts_per_speaker": dict(sorted(spk.items())),
+    }, indent=2, ensure_ascii=False))
 
-    if a.dry_run:
-        print(json.dumps({
-            "manifest": str(manifest_path),
-            "records": len(rows),
-            "accepted": len(accepted),
-            "speakers": len(keep_spk),
-            "hours": round(total_sec / 3600, 3),
-            "rejected": dict(reasons),
-            "utts_per_speaker": {s: len([r for r in accepted if r["speaker_id"] == s]) for s in sorted(keep_spk)},
-        }, indent=2, ensure_ascii=False))
-        return
+
+# --------------------------------------------------------------------------- shared pipeline: tokens -> refs -> split -> TSV
+def build_dataset(
+    accepted: List[dict],
+    out_dir: Path,
+    a: argparse.Namespace,
+    reasons: Counter,
+    summary_extra: Optional[dict] = None,
+    use_split_field: bool = False,
+) -> dict:
+    """Steps 3-5. ``accepted`` rows need: id, wav_abs, norm_text, speaker_id, duration,
+    and optionally cer / snr_db / dnsmos (for reference ranking) and split.
+    """
     if not accepted:
-        sys.exit("nothing accepted; relax the thresholds or check the manifest")
-
+        sys.exit("nothing accepted; relax the thresholds or check the input")
     out_dir.mkdir(parents=True, exist_ok=True)
+    sem_dir = out_dir / "semantic"
     sem_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---- 2. semantic tokens
+    # ---- semantic tokens
     from semantic_tokenizer import SemanticTokenizer  # noqa: E402  (scripts/ on sys.path)
 
     tok: Optional[SemanticTokenizer] = None
@@ -354,8 +357,8 @@ def main() -> None:
         if abs(med - SEMANTIC_FRAME_RATE_HZ) / SEMANTIC_FRAME_RATE_HZ > 0.2:
             log.warning("token rate deviates >20%% from %.0f Hz; check audio sample rate / codec", SEMANTIC_FRAME_RATE_HZ)
 
-    # ---- 3. reference clips
-    by_spk = defaultdict(list)
+    # ---- reference clips
+    by_spk: Dict[str, List[dict]] = defaultdict(list)
     for r in accepted:
         by_spk[r["speaker_id"]].append(r)
     final: List[dict] = []
@@ -370,8 +373,8 @@ def main() -> None:
         r["ref_paths"] = refs
         final.append(r)
 
-    # ---- 4. split + write
-    splits = split_per_speaker(final, a.val_ratio, a.seed)
+    # ---- split + write
+    splits = split_from_field(final) if use_split_field else split_per_speaker(final, a.val_ratio, a.seed)
     write_tsv(out_dir / "train.tsv", splits["train"], a.lang)
     write_tsv(out_dir / "val.tsv", splits["val"], a.lang)
     with (out_dir / "accepted.jsonl").open("w", encoding="utf-8") as f:
@@ -383,10 +386,8 @@ def main() -> None:
         return round(sum(x["duration"] for x in rs) / 3600, 3)
 
     summary = {
-        "manifest": str(manifest_path),
         "out_dir": str(out_dir),
         "lang": a.lang,
-        "records_in_manifest": len(rows),
         "accepted": len(final),
         "rejected": dict(reasons),
         "speakers": len({r["speaker_id"] for r in final}),
@@ -395,16 +396,72 @@ def main() -> None:
         "val": {"utts": len(splits["val"]), "hours": hours(splits["val"])},
         "utts_per_speaker": dict(Counter(r["speaker_id"] for r in final)),
         "semantic_tokens_per_sec_median": round(float(np.median(tok_rates)), 2) if tok_rates else None,
-        "thresholds": {
-            "max_cer": a.max_cer, "min_snr_db": a.min_snr_db, "min_dnsmos": a.min_dnsmos,
-            "max_clipping": a.max_clipping, "min_seconds": a.min_seconds, "max_seconds": a.max_seconds,
-            "allow_multi_speaker": a.allow_multi_speaker,
-        },
         "num_refs": a.num_refs,
+        "split_mode": "pipeline_split_field" if use_split_field else "per_speaker",
     }
+    if summary_extra:
+        summary.update(summary_extra)
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     log.info("wrote %s (%d rows) and %s (%d rows)", out_dir / "train.tsv", len(splits["train"]), out_dir / "val.tsv", len(splits["val"]))
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return summary
+
+
+# --------------------------------------------------------------------------- main (s7 entry point)
+def main() -> None:
+    a = parse_args()
+    setup_logging(a.verbose)
+
+    s7_dir = Path(a.s7_dir).expanduser().resolve()
+    manifest_path = s7_dir / "manifest.jsonl"
+    if not manifest_path.is_file():
+        sys.exit(f"manifest not found: {manifest_path}")
+    pipeline_root = Path(a.pipeline_root).resolve() if a.pipeline_root else s7_dir.parent.parent
+    out_dir = resolve_out_dir(a.out_dir)
+
+    rows = read_manifest(manifest_path)
+    log.info("manifest %s: %d records", manifest_path, len(rows))
+    reasons: Counter = Counter()
+    accepted: List[dict] = []
+    for r in rows:
+        wav = resolve_audio(r, s7_dir, pipeline_root)
+        if wav is None:
+            reasons["audio_missing"] += 1
+            continue
+        text = clean_text(r.get(a.text_field) or r.get("text"))
+        why = tier_reject_reason(r, a, text)
+        if why:
+            reasons[why] += 1
+            continue
+        if not r.get("speaker_id"):
+            reasons["speaker_missing"] += 1
+            continue
+        rr = dict(r)
+        rr["wav_abs"] = wav
+        rr["norm_text"] = text
+        accepted.append(rr)
+    log.info("tier filter: %d accepted, rejected by reason: %s", len(accepted), dict(reasons))
+
+    accepted = drop_small_speakers(accepted, a.min_utts_per_speaker, reasons)
+    log.info("after speaker filter: %d utts, %d speakers, %.2f h",
+             len(accepted), len({r["speaker_id"] for r in accepted}), sum(r["duration"] for r in accepted) / 3600)
+
+    if a.dry_run:
+        dry_run_report(str(manifest_path), len(rows), accepted, reasons)
+        return
+
+    build_dataset(
+        accepted, out_dir, a, reasons,
+        summary_extra={
+            "source": str(manifest_path),
+            "records_in_manifest": len(rows),
+            "thresholds": {
+                "max_cer": a.max_cer, "min_snr_db": a.min_snr_db, "min_dnsmos": a.min_dnsmos,
+                "max_clipping": a.max_clipping, "min_seconds": a.min_seconds, "max_seconds": a.max_seconds,
+                "allow_multi_speaker": a.allow_multi_speaker,
+            },
+        },
+    )
 
 
 if __name__ == "__main__":

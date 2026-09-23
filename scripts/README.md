@@ -9,7 +9,8 @@ into the TSV + `.npy` format that `confuciustts/dataset/t2s_dataset.py` and
 | File | Purpose |
 |---|---|
 | `scripts/semantic_tokenizer.py` | audio → semantic tokens (w2v-BERT 2.0 layer 17 → stats normalization → MaskGCT RepCodec). Library + one-file CLI. |
-| `scripts/prepare_confucius_data.py` | manifest → tier-A filter → tokens → reference clips → `train.tsv` / `val.tsv` / `summary.json` |
+| `scripts/prepare_confucius_data.py` | **s7** manifest → tier-A filter → tokens → reference clips → `train.tsv` / `val.tsv` / `summary.json`. Also hosts the shared `build_dataset()` pipeline. |
+| `scripts/prepare_confucius_data_s8.py` | **s8** packaged dataset (`dataset/metadata.csv` + `wav/`) → keep tiers → same shared pipeline. Self-contained: does not need the s7 folder. |
 | `config/train_t2s_vi.yaml` | T2S fine-tune config pointing at `data/vi_podcast_Confucius4_TTS` |
 | `config/train_s2a_vi.yaml` | S2A fine-tune config, same data |
 
@@ -61,6 +62,30 @@ data/vi_podcast_Confucius4_TTS/
 Filter defaults are the pipeline's tier A (`config/default.yaml`): CER ≤ 0.02, SNR ≥ 20 dB
 (or DNSMOS ≥ 3.0 when present), clipping ≤ 0.1 %, 2–13 s, single speaker. Relax with
 `--max-cer 0.15 --min-snr-db 10 --max-seconds 25` etc. when data is scarce.
+
+### From the packaged s8 dataset instead
+
+`s8_package/dataset/` already carries the tier and a copy of every kept wav, so it is the
+right input when only the packaged dataset was copied to the training machine:
+
+```bash
+# tier A only (default), re-split inside each speaker
+python scripts/prepare_confucius_data_s8.py \
+    --s8-dir ../speech_dataset/audio-pipeline/work_5min/s8_package \
+    --out-dir data/vi_podcast_Confucius4_TTS --lang vi --dry-run
+
+python scripts/prepare_confucius_data_s8.py --s8-dir ... --out-dir ... --device cuda
+
+# include tier B, keep s8's own speaker-disjoint split (val/test -> val.tsv)
+python scripts/prepare_confucius_data_s8.py --s8-dir ... --out-dir ... --tiers A,B --use-pipeline-split
+
+# read manifest.jsonl instead of metadata.csv (needs s7 audio; lets you pull tiers not exported)
+python scripts/prepare_confucius_data_s8.py --s8-dir ... --out-dir ... --tiers A,B --from-manifest
+```
+
+The s8 script has no per-metric thresholds: the tier already encodes them. `--max-seconds`
+(default 30) and `--min-utts-per-speaker` still apply. Reference-clip, split and tokenizer
+options are the same as the s7 script.
 
 Reference clips: for each utterance, the `--num-refs` best other clips (3–15 s) of the same
 speaker. Speakers with fewer than `--min-utts-per-speaker` accepted clips are dropped.
