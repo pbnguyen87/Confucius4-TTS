@@ -18,6 +18,7 @@ logs/
 config/.inference_config_runtime.yaml
 *.wav
 !resources/*.wav
+!audio_samples/*.wav
 
 # OS / editor
 .DS_Store
