@@ -38,7 +38,16 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+INVOCATION_CWD = Path.cwd()  # user-supplied relative paths are resolved from here
 os.chdir(REPO_ROOT)  # inference_config.yaml uses paths relative to the repo root
+
+
+def _user_path(p: str | None) -> str | None:
+    """Resolve a CLI path relative to the directory the script was launched from."""
+    if p is None:
+        return None
+    q = Path(p).expanduser()
+    return str(q if q.is_absolute() else (INVOCATION_CWD / q).resolve())
 
 # --------------------------------------------------------------------------- Vietnamese text normalization
 _DIGITS = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
@@ -219,6 +228,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     a = parse_args()
+    a.prompt_wav = _user_path(a.prompt_wav)
+    a.out = _user_path(a.out)
+    a.text_file = _user_path(a.text_file)
+    a.t2s_checkpoint = _user_path(a.t2s_checkpoint)
+    a.s2a_checkpoint = _user_path(a.s2a_checkpoint)
+    if not Path(a.prompt_wav).is_file():
+        sys.exit(f"[generate_vi] reference audio not found: {a.prompt_wav}")
     text = a.text if a.text is not None else Path(a.text_file).read_text(encoding="utf-8")
     norm = text.strip() if a.no_normalize else normalize_vietnamese(text)
     print(f"[generate_vi] text      : {text.strip()[:200]}")
