@@ -144,6 +144,17 @@ makes the model stop early; the repetition penalty is applied to generated token
 (`--penalize-prompt` restores the stock behaviour). On the paper's Seed-TTS-eval numbers this
 mode gains ~0.015 speaker similarity on English and costs a little WER.
 
+`scripts/generate_vi_both_modes.py` runs both modes on the same sentences with the same seed
+and writes `<name>.reference.wav`, `<name>.continuation.wav` and a `pairs.jsonl` log, for
+side-by-side listening or scoring:
+
+```bash
+python scripts/generate_vi_both_modes.py \
+    --prompt-wav audio_samples/5e7117f231ca_00123600_00136600.wav \
+    --prompt-text-file audio_samples/5e7117f231ca_00123600_00136600.txt \
+    --text-file sentences.txt --out-dir data/both_modes --seed 1000
+```
+
 ## Notes
 
 - The dataset loaders silently replace any failing sample with a random one, so keep an eye
