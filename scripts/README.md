@@ -125,6 +125,25 @@ CAM++ (`funasr/campplus`) and BigVGAN v2 22 kHz are still fetched from Hugging F
 first run (~0.5 GB). A runtime copy of the config is written to
 `config/.inference_config_runtime.yaml`.
 
+### Continuation (in-context) mode
+
+The released inference only does *reference* mode. `scripts/generate_vi_continuation.py`
+adds the paper's *continuation* mode on the same weights: the prompt transcript is prepended
+to the target text and the prompt's MaskGCT semantic tokens are prepended to the output, so
+T2S continues the prompt utterance. S2A and the vocoder are unchanged. It needs the exact
+transcript of the prompt clip (or `--auto-transcribe` with PhoWhisper).
+
+```bash
+python scripts/generate_vi_continuation.py \
+    --prompt-wav ref.wav --prompt-text "Transcript của đoạn ref." \
+    --text "Câu cần đọc." --out data/cont_vi.wav --also-reference   # also writes data/cont_vi.reference.wav
+```
+
+Notes: keep prompts at 3–15 s (training limit); a transcript that does not match the audio
+makes the model stop early; the repetition penalty is applied to generated tokens only
+(`--penalize-prompt` restores the stock behaviour). On the paper's Seed-TTS-eval numbers this
+mode gains ~0.015 speaker similarity on English and costs a little WER.
+
 ## Notes
 
 - The dataset loaders silently replace any failing sample with a random one, so keep an eye
