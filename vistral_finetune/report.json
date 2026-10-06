@@ -1,0 +1,40 @@
+{
+  "vistral_repo": "jan-hq/Vistral-7B-Chat-DPO",
+  "t2s_checkpoint": "/Users/binhnguyen8/Downloads/study/Confucius4-TTS/checkpoints/t2s_model.safetensors",
+  "vocab_check": {
+    "mistral_vocab": 32000,
+    "vistral_vocab": 38369,
+    "shared_rows": 32000,
+    "mismatched_shared_ids": 0,
+    "examples": []
+  },
+  "shared_row_drift_cosine": {
+    "mean": 0.9571,
+    "p10": 0.9352,
+    "median": 0.9699
+  },
+  "table": {
+    "output_norm_calibration_factor": 0.7834,
+    "projector_out_norm_old_rows": 2.094,
+    "projector_out_norm_new_rows": 2.094,
+    "n_new_rows": 6369,
+    "scale_applied_to_vistral_rows": 1.3293,
+    "old_row_mean_norm": 0.1719,
+    "vistral_new_row_mean_norm": 0.1293,
+    "hybrid_new_row_mean_norm": 0.1347,
+    "mistral_subpieces_per_new_piece_mean": 2.88,
+    "init": "blend",
+    "blend": 0.5,
+    "renorm_to_old_mean": true
+  },
+  "tokens_per_syllable": {
+    "mistral": 2.585,
+    "vistral": 1.146
+  },
+  "out": "/Users/binhnguyen8/Downloads/study/Confucius4-TTS/checkpoints/t2s_model_vistral_hybrid.safetensors",
+  "config_changes": {
+    "t2s_model.vocab_size": 38369,
+    "paths.tokenizer_path": "/Users/binhnguyen8/Downloads/study/Confucius4-TTS/vistral_finetune/tokenizer",
+    "paths.t2s_checkpoint": "/Users/binhnguyen8/Downloads/study/Confucius4-TTS/checkpoints/t2s_model_vistral_hybrid.safetensors"
+  }
+}

@@ -22,3 +22,8 @@ config/.inference_config_runtime.yaml
 
 # OS / editor
 .DS_Store
+
+# Vistral hybrid build cache (314 MB tensor)
+vistral_finetune/assets/
+vistral_finetune/tokenizer/.cache/
+*.swp
