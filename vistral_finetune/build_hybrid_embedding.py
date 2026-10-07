@@ -62,6 +62,12 @@ def fetch_tokenizer(repo: str, dest: Path) -> Path:
     from huggingface_hub import hf_hub_download, list_repo_files
 
     dest.mkdir(parents=True, exist_ok=True)
+    if Path(repo).is_dir():  # local export, e.g. mistral_lora_finetune/checkpoints/mistral-7b-vi-final
+        import shutil
+        for f in TOKENIZER_FILES + ["tokenizer.json"]:
+            if (Path(repo) / f).is_file():
+                shutil.copy(Path(repo) / f, dest / f)
+        return dest
     have = set(list_repo_files(repo, token=False))
     got = []
     for f in TOKENIZER_FILES:
@@ -79,6 +85,13 @@ def fetch_embed_tokens(repo: str, cache: Path) -> "torch.Tensor":
     import torch
 
     cache.mkdir(parents=True, exist_ok=True)
+    if Path(repo).is_dir():  # local checkpoint: read the embedding straight from its safetensors
+        from safetensors import safe_open
+        d = Path(repo); idx = d / "model.safetensors.index.json"
+        key = "model.embed_tokens.weight"
+        shard = d / json.loads(idx.read_text())["weight_map"][key] if idx.is_file() else d / "model.safetensors"
+        with safe_open(str(shard), "pt") as f:
+            return f.get_tensor(key).float().clone()
     cached = cache / "vistral_embed_tokens.pt"
     if cached.is_file():
         return torch.load(cached, map_location="cpu").float()
