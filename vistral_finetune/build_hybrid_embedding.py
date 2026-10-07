@@ -136,8 +136,16 @@ def build_table(mis_table, vis_table, mis_tok, vis_tok, init: str, blend: float,
     for j in range(n_new):
         tid = MISTRAL_ROWS + j
         piece = vis_tok.convert_ids_to_tokens(tid)
-        text = piece.replace("▁", " ")
-        sub = mis_tok.encode(text, add_special_tokens=False)
+        # word-initial pieces: encode the bare word (tokenizer adds the "▁"); word-internal pieces: drop the
+        # spurious leading "▁" the tokenizer inserts, so the word-boundary row is not averaged into every row
+        initial = piece.startswith("▁")
+        sub = mis_tok.encode(piece[1:] if initial else piece, add_special_tokens=False)
+        if not initial and sub:
+            toks = mis_tok.convert_ids_to_tokens(sub)
+            if toks[0] == "▁":
+                sub = sub[1:]
+            elif toks[0].startswith("▁") and toks[0][1:] in mis_tok.get_vocab():
+                sub[0] = mis_tok.get_vocab()[toks[0][1:]]
         sub = [s for s in sub if s < MISTRAL_ROWS] or [mis_tok.unk_token_id or 0]
         n_subpieces.append(len(sub))
         sub_mean = mis_table[sub].mean(dim=0)
