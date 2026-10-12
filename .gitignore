@@ -13,7 +13,9 @@ pretrained/
 external/Amphion/
 
 # Generated data, logs, runtime files
-data/
+# repo-root training data only -- anchored so it does not swallow
+# confuciustts/frontend/data/, which holds the vendored vinorm TSV tables
+/data/
 logs/
 config/.inference_config_runtime.yaml
 *.wav

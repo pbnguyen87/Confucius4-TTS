@@ -2,11 +2,11 @@
 
 Differences from the stock ``example.py``:
 
-* **Vietnamese text normalization.** The repo's ``TextNormalizer`` has no Vietnamese
-  branch and would send ``vi`` text through the English ``wetext`` normalizer ("2" ->
-  "two"). This script normalizes numbers, percentages, decimals and a few abbreviations
-  into Vietnamese words itself (or via ``vinorm`` when installed) and calls
-  ``generate(raw=True)`` so the model receives the text unchanged.
+* **Vietnamese text normalization.** The repo's ``TextNormalizer`` used to have
+  no Vietnamese branch and would send ``vi`` text through the English
+  ``wetext`` normalizer ("2" -> "two"). Normalization now lives in the library
+  (``confuciustts.frontend.vi_normalizer``, wired into ``TextNormalizer``), so
+  this script only delegates to it.
 * **Local checkpoints.** ``ConfuciusTTS`` resolves every checkpoint through
   ``hf_hub_download`` and treats ``t2s_checkpoint`` as a file name inside the HF repo.
   This script patches that resolver so files already present under ``checkpoints/``,
@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sys
 import time
 from pathlib import Path
@@ -41,6 +40,8 @@ sys.path.insert(0, str(REPO_ROOT))
 INVOCATION_CWD = Path.cwd()  # user-supplied relative paths are resolved from here
 os.chdir(REPO_ROOT)  # inference_config.yaml uses paths relative to the repo root
 
+from confuciustts.frontend.vi_normalizer import normalize_vietnamese  # noqa: E402
+
 
 def _user_path(p: str | None) -> str | None:
     """Resolve a CLI path relative to the directory the script was launched from."""
@@ -48,116 +49,6 @@ def _user_path(p: str | None) -> str | None:
         return None
     q = Path(p).expanduser()
     return str(q if q.is_absolute() else (INVOCATION_CWD / q).resolve())
-
-# --------------------------------------------------------------------------- Vietnamese text normalization
-_DIGITS = ["không", "một", "hai", "ba", "bốn", "năm", "sáu", "bảy", "tám", "chín"]
-
-ABBREVIATIONS = {
-    r"\bTP\.?\s*HCM\b": "thành phố Hồ Chí Minh",
-    r"\bTP\.": "thành phố",
-    r"\bHN\b": "Hà Nội",
-    r"\bUBND\b": "ủy ban nhân dân",
-    r"\bVN\b": "Việt Nam",
-    r"\bTS\.": "tiến sĩ",
-    r"\bThS\.": "thạc sĩ",
-    r"\bGS\.": "giáo sư",
-    r"\bPGS\.": "phó giáo sư",
-    r"\bBS\.": "bác sĩ",
-    r"\bv\.v\.": "vân vân",
-    r"\bvs\b": "với",
-    r"%": " phần trăm",
-    r"\bkm\b": "ki lô mét",
-    r"\bkg\b": "ki lô gam",
-    r"\bcm\b": "xen ti mét",
-    r"\bmm\b": "mi li mét",
-    r"\bUSD\b": "đô la Mỹ",
-    r"\bVNĐ\b|\bVND\b|\bđ\b": "đồng",
-}
-
-
-def _read_three(n: int, full: bool) -> str:
-    """Read a 0..999 group. ``full`` forces reading leading zeros ("không trăm ...")."""
-    hundreds, rest = divmod(n, 100)
-    tens, units = divmod(rest, 10)
-    words = []
-    if hundreds or full:
-        words += [_DIGITS[hundreds], "trăm"]
-    if tens == 0:
-        if units:
-            if hundreds or full:
-                words.append("lẻ")
-            words.append(_DIGITS[units])
-    elif tens == 1:
-        words.append("mười")
-        if units == 5:
-            words.append("lăm")
-        elif units:
-            words.append(_DIGITS[units])
-    else:
-        words += [_DIGITS[tens], "mươi"]
-        if units == 1:
-            words.append("mốt")
-        elif units == 4:
-            words.append("tư")
-        elif units == 5:
-            words.append("lăm")
-        elif units:
-            words.append(_DIGITS[units])
-    return " ".join(words)
-
-
-def number_to_vietnamese(n: int) -> str:
-    if n == 0:
-        return "không"
-    if n < 0:
-        return "âm " + number_to_vietnamese(-n)
-    groups = []
-    while n > 0:
-        groups.append(n % 1000)
-        n //= 1000
-    scales = ["", "nghìn", "triệu", "tỷ", "nghìn tỷ", "triệu tỷ"]
-    parts = []
-    for i in range(len(groups) - 1, -1, -1):
-        g = groups[i]
-        if g == 0:
-            continue
-        full = i != len(groups) - 1  # leading zeros are read inside lower groups
-        text = _read_three(g, full)
-        if scales[i]:
-            text += " " + scales[i]
-        parts.append(text)
-    return " ".join(parts)
-
-
-def _replace_number(match: re.Match) -> str:
-    raw = match.group(0)
-    s = raw.replace(".", "").replace(" ", "") if re.fullmatch(r"\d{1,3}(\.\d{3})+", raw) else raw
-    if "," in s:  # Vietnamese decimal comma
-        int_part, frac = s.split(",", 1)
-        return number_to_vietnamese(int(int_part)) + " phẩy " + " ".join(_DIGITS[int(c)] for c in frac if c.isdigit())
-    return number_to_vietnamese(int(s))
-
-
-def normalize_vietnamese(text: str) -> str:
-    """Lightweight Vietnamese text normalization for TTS input."""
-    try:  # prefer the full normalizer when available (pip install vinorm)
-        from vinorm import TTSnorm  # type: ignore
-
-        text = TTSnorm(text, punc=False, unknown=False, lower=False, rule=False)
-    except Exception:
-        pass
-
-    text = text.replace("\r\n", " ").replace("\n", " ").replace("\t", " ")
-    for pat, rep in ABBREVIATIONS.items():
-        text = re.sub(pat, rep, text)
-    # dates dd/mm/yyyy -> "ngày d tháng m năm y"
-    text = re.sub(r"\b(\d{1,2})/(\d{1,2})/(\d{4})\b", lambda m: f"ngày {m.group(1)} tháng {m.group(2)} năm {m.group(3)}", text)
-    # numbers: thousands with dots (1.234.567), decimals with comma (3,5), plain integers
-    text = re.sub(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+,\d+|\d+", _replace_number, text)
-    text = text.replace('"', "").replace("“", "").replace("”", "")
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
 
 
 # --------------------------------------------------------------------------- local checkpoint resolver
@@ -202,7 +93,7 @@ def parse_args() -> argparse.Namespace:
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument("--text", help="text to synthesize")
     src.add_argument("--text-file", help="UTF-8 text file to synthesize")
-    ap.add_argument("--prompt-wav", required=True, help="reference voice clip (3-15 s, single speaker)")
+    ap.add_argument("--prompt-wav", default=None, help="reference voice clip (3-15 s, single speaker)")
     ap.add_argument("--out", default="data/output_vi.wav")
     ap.add_argument("--config", default="config/inference_config.yaml")
     ap.add_argument("--w2v-bert-path", default="pretrained/w2v-bert-2.0" if (REPO_ROOT / "pretrained/w2v-bert-2.0").is_dir() else None,
@@ -233,14 +124,15 @@ def main() -> None:
     a.text_file = _user_path(a.text_file)
     a.t2s_checkpoint = _user_path(a.t2s_checkpoint)
     a.s2a_checkpoint = _user_path(a.s2a_checkpoint)
-    if not Path(a.prompt_wav).is_file():
-        sys.exit(f"[generate_vi] reference audio not found: {a.prompt_wav}")
     text = a.text if a.text is not None else Path(a.text_file).read_text(encoding="utf-8")
     norm = text.strip() if a.no_normalize else normalize_vietnamese(text)
+    if a.print_normalized:
+        print(f"[generate_vi] normalized: {norm}")
+        return
+    if a.prompt_wav is not None and not Path(a.prompt_wav).is_file():
+        sys.exit(f"[generate_vi] reference audio not found: {a.prompt_wav}")
     print(f"[generate_vi] text      : {text.strip()[:200]}")
     print(f"[generate_vi] normalized: {norm[:200]}")
-    if a.print_normalized:
-        return
 
     import torch
     import torchaudio

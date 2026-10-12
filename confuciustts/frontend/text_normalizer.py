@@ -16,12 +16,19 @@
 # Modified from https://github.com/FunAudioLLM/CosyVoice
 
 import re
+import unicodedata
 import regex
 import inflect
 from typing import List, Callable
 from functools import partial
 
 from confuciustts.utils.text_utils import to_katakana
+from confuciustts.frontend.vi_normalizer import normalize_vietnamese
+
+# Vietnamese-specific segmentation: comma splits a Vietnamese clause, and the
+# Unicode list covers every punctuation that can end a Vietnamese sentence.
+_VI_SENTENCE_PUNCTUATION = ['.', '?', '!', ';', ':', '…']
+_VI_CLAUSE_PUNCTUATION = [',']
 
 
 class TextNormalizer:
@@ -30,6 +37,13 @@ class TextNormalizer:
 
         self.chinese_pattern = re.compile(r'[一-鿿]+')
         self.punctuation_pattern = r'^[\p{P}\p{S}]*$'
+        # Lowercase-only Vietnamese diacritic class; see contains_vietnamese
+        # for why uppercase is handled by casefolding the input instead.
+        self._vi_mark_class = re.compile(
+            r'[ăâđêôơư'
+            r'àáảãạằắẳẵặèéẻẽẹìíỉĩịòóỏõọùúủũụỳýỷỹỵ'
+            r'ầấẩẫậềếểễệồốổỗộờớởỡợừứửữự]'
+        )
 
         self.zh_normalizer = None
         self.en_normalizer = None
@@ -42,6 +56,20 @@ class TextNormalizer:
 
     def contains_chinese(self, text: str) -> bool:
         return bool(self.chinese_pattern.search(text))
+
+    def contains_vietnamese(self, text: str) -> bool:
+        # Vietnamese tone marks that never occur in the other supported
+        # languages' scripts. Covers every layer of diacritics: bare â đ ơ ư,
+        # tone-marked plain vowels (à á ả ã ạ, è é ẻ ẽ ẹ, ...), and tone marks
+        # stacked on already-marked vowels (ầ ấ ẩ ẫ ậ, ề ế ể ễ ệ, ồ ố ổ ỗ ộ,
+        # ờ ớ ở ỡ ợ, ừ ứ ử ữ ự) — "tiếng Việt" needs the stacked ế and ệ.
+        # Matching runs on a casefolded copy of the text so uppercase variants
+        # (TIẾNG, HỒ) need no second class; Vietnamese casefold maps each
+        # uppercase mark to exactly the lowercase form listed here.
+        # Compose first: decomposed input ("e" + combining acute) carries none of
+        # the precomposed characters this class matches, so NFD Vietnamese without
+        # an "đ" would otherwise be routed to the English normalizer.
+        return bool(self._vi_mark_class.search(unicodedata.normalize("NFC", text).casefold()))
 
     def is_only_punctuation(self, text: str) -> bool:
         return bool(regex.fullmatch(self.punctuation_pattern, text))
@@ -119,6 +147,9 @@ class TextNormalizer:
     def normalize_japanese(self, text: str) -> str:
         return to_katakana(text)
 
+    def normalize_vietnamese(self, text: str) -> str:
+        return normalize_vietnamese(text)
+
     def normalize(self, text: str, language: str = "auto") -> str:
         if not text:
             return text
@@ -128,12 +159,19 @@ class TextNormalizer:
         text = text.strip()
 
         if language == "auto":
-            language = "zh" if self.contains_chinese(text) else "en"
+            if self.contains_chinese(text):
+                language = "zh"
+            elif self.contains_vietnamese(text):
+                language = "vi"
+            else:
+                language = "en"
 
         if language == "zh":
             text = self.normalize_chinese(text)
         elif language == "ja":
             text = self.normalize_japanese(text)
+        elif language == "vi":
+            text = self.normalize_vietnamese(text)
         else:
             text = self.normalize_english(text)
 
@@ -149,6 +187,12 @@ class TextNormalizer:
         merge_threshold: int = 20,
         split_on_comma: bool = False,
     ) -> List[str]:
+        # Vietnamese clauses end at commas too, and the hard-cut fallback must
+        # never split a syllable in half. Everything else follows the shared path.
+        is_vi = language == "vi"
+        if is_vi:
+            split_on_comma = True
+
         def calc_length(t: str) -> int:
             if language == "zh":
                 return len(t)
@@ -164,6 +208,8 @@ class TextNormalizer:
         # Define punctuation marks
         if language == "zh":
             punctuation = ['。', '？', '！', '；', '：', '.', '?', '!', ';']
+        elif is_vi:
+            punctuation = list(_VI_SENTENCE_PUNCTUATION)
         else:
             punctuation = ['.', '?', '!', ';', ':']
 
@@ -192,9 +238,26 @@ class TextNormalizer:
         if len(segments) == 1 and calc_length(segments[0]) > max_tokens:
             long_text = segments[0][:-1]  # Remove added punctuation
             segments = []
-            for i in range(0, len(long_text), max_tokens):
-                chunk = long_text[i:i + max_tokens]
-                segments.append(chunk)
+            if is_vi:
+                # Vietnamese syllables are space-separated: cut at word
+                # boundaries in the same unit calc_length measures, keeping a
+                # trailing space so the final join cannot glue syllables
+                # together ("Mộtcâu"). Each chunk stays <= max_tokens.
+                words = long_text.split(" ")
+                current = ""
+                for word in words:
+                    candidate = current + " " + word if current else word
+                    if current and calc_length(candidate) > max_tokens:
+                        segments.append(current + " ")
+                        current = word
+                    else:
+                        current = candidate
+                if current:
+                    segments.append(current + " ")
+            else:
+                for i in range(0, len(long_text), max_tokens):
+                    chunk = long_text[i:i + max_tokens]
+                    segments.append(chunk)
 
         final_segments = []
         current = ""
